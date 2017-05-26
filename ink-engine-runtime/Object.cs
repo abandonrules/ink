@@ -45,7 +45,15 @@ namespace Ink.Runtime
             // Try to get a line number from debug metadata
             var root = this.rootContentContainer;
             if (root) {
-                var targetContent = root.ContentAtPath (path);
+                Runtime.Object targetContent = null;
+
+                // Sometimes paths can be "invalid" if they're externally defined
+                // in the game. TODO: Change ContentAtPath to return null, and
+                // only throw an exception in places that actually care!
+                try {
+                    targetContent = root.ContentAtPath (path);
+                } catch { }
+
                 if (targetContent) {
                     var dm = targetContent.debugMetadata;
                     if (dm != null) {
@@ -152,8 +160,7 @@ namespace Ink.Runtime
             for (int down = lastSharedPathCompIndex + 1; down < globalPath.components.Count; ++down)
                 newPathComps.Add (globalPath.components [down]);
 
-            var relativePath = new Path (newPathComps);
-            relativePath.isRelative = true;
+            var relativePath = new Path (newPathComps, relative:true);
             return relativePath;
         }
 
@@ -193,7 +200,7 @@ namespace Ink.Runtime
 		{
 		}
 
-        public virtual Object Copy()
+        internal virtual Object Copy()
         {
             throw new System.NotImplementedException (GetType ().Name + " doesn't support copying");
         }

@@ -79,7 +79,7 @@ namespace Ink.Runtime
 
 		public List<Component> components { get; private set; }
 
-        public bool isRelative { get; set; }
+        public bool isRelative { get; private set; }
 
 		public Component head 
 		{ 
@@ -145,9 +145,10 @@ namespace Ink.Runtime
 			components.AddRange (tail.components);
 		}
 
-		public Path(IEnumerable<Component> components) : this()
+		public Path(IEnumerable<Component> components, bool relative = false) : this()
 		{
 			this.components.AddRange (components);
+            this.isRelative = relative;
 		}
 
         public Path(string componentsString) : this()
@@ -195,18 +196,25 @@ namespace Ink.Runtime
                 else
                     return compsStr;
             }
-            set {
+            private set {
                 components.Clear ();
 
                 var componentsStr = value;
+
+                // Empty path, empty components
+                // (path is to root, like "/" in file system)
+                if (string.IsNullOrEmpty(componentsStr))
+                    return;
 
                 // When components start with ".", it indicates a relative path, e.g.
                 //   .^.^.hello.5
                 // is equivalent to file system style path:
                 //  ../../hello/5
                 if (componentsStr [0] == '.') {
-                    isRelative = true;
+                    this.isRelative = true;
                     componentsStr = componentsStr.Substring (1);
+                } else {
+                    this.isRelative = false;
                 }
 
                 var componentStrings = componentsStr.Split('.');

@@ -47,6 +47,39 @@ namespace Ink
             return new Parsed.Story (topLevelContent);
         }
 
+        protected List<T> SeparatedList<T> (SpecificParseRule<T> mainRule, ParseRule separatorRule) where T : class
+        {
+            T firstElement = Parse (mainRule);
+            if (firstElement == null) return null;
+
+            var allElements = new List<T> ();
+            allElements.Add (firstElement);
+
+            do {
+
+                int nextElementRuleId = BeginRule ();
+
+                var sep = separatorRule ();
+                if (sep == null) {
+                    FailRule (nextElementRuleId);
+                    break;
+                }
+
+                var nextElement = Parse (mainRule);
+                if (nextElement == null) {
+                    FailRule (nextElementRuleId);
+                    break;
+                }
+
+                SucceedRule (nextElementRuleId);
+
+                allElements.Add (nextElement);
+
+            } while (true);
+
+            return allElements;
+        }
+
         protected override string PreProcessInputString(string str)
         {
             var inputWithCommentsRemoved = (new CommentEliminator (str)).Process();
@@ -64,6 +97,21 @@ namespace Ink
                 md.endLineNumber = stateAtEnd.lineIndex + 1;
                 md.fileName = _filename;
                 parsedObj.debugMetadata = md;
+                return;
+            }
+
+            // A list of objects that doesn't already have metadata?
+            var parsedListObjs = result as List<Parsed.Object>;
+            if (parsedListObjs != null) {
+                foreach (var parsedListObj in parsedListObjs) {
+                    if (!parsedListObj.hasOwnDebugMetadata) {
+                        var md = new Runtime.DebugMetadata ();
+                        md.startLineNumber = stateAtStart.lineIndex + 1;
+                        md.endLineNumber = stateAtEnd.lineIndex + 1;
+                        md.fileName = _filename;
+                        parsedListObj.debugMetadata = md;
+                    }
+                }
             }
         }
             

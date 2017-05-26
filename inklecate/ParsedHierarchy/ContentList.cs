@@ -5,6 +5,8 @@ namespace Ink.Parsed
 {
     internal class ContentList : Parsed.Object
     {
+        public bool dontFlatten { get; set; }
+
         public Runtime.Container runtimeContainer {
             get {
                 return (Runtime.Container) this.runtimeObject;
@@ -49,18 +51,26 @@ namespace Ink.Parsed
             var container = new Runtime.Container ();
             if (content != null) {
                 foreach (var obj in content) {
-                    container.AddContent (obj.runtimeObject);
+                    var contentObjRuntime = obj.runtimeObject;
+
+                    // Some objects (e.g. author warnings) don't generate runtime objects
+                    if( contentObjRuntime )
+                        container.AddContent (contentObjRuntime);
                 }
             }
+
+            if( dontFlatten )
+                story.DontFlattenContainer (container);
+
             return container;
         }
 
         public override string ToString ()
         {
             var sb = new StringBuilder ();
-            foreach (var c in content) {
-                sb.Append (c.ToString ());
-            }
+            sb.Append ("ContentList(");
+            sb.Append(string.Join (", ", content));
+            sb.Append (")");
             return sb.ToString ();
         }
     }

@@ -25,7 +25,25 @@ namespace Ink.Parsed
 
         public override string ToString ()
         {
-            return value.ToString ();
+            if (value is float) {
+                return ((float)value).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            } else {
+                return value.ToString();
+            }
+        }
+
+        // Equals override necessary in order to check for CONST multiple definition equality
+        public override bool Equals (object obj)
+        {
+            var otherNum = obj as Number;
+            if (otherNum == null) return false;
+
+            return this.value.Equals (otherNum.value);
+        }
+
+        public override int GetHashCode ()
+        {
+            return this.value.GetHashCode ();
         }
          
 	}

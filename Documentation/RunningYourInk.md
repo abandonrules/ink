@@ -13,9 +13,7 @@
 
 Ink uses an intermediate `.json` format, which is compiled from the original `.ink` files. ink's Unity integration package automatically compiles ink files for you, but you can also compile them on the command line. See **Using inklecate on the command line** in the [README](http://www.github.com/inkle/ink) for more information.
 
-The main runtime code is included in the `ink-engine.dll`, and we also have a dependency on the `Newtonsoft.Json.dll` library, which is also included in the integration package.
-
-You may need to change API compatibility for .NET: Go into `Edit -> Project settings -> Player -> Other settings` and change API compatibility level from .NET 2.0 subset (the default) to .NET 2.0. (If you get the error `TypeLoadException: Could not load type 'Newtonsoft.Json.Linq.JArray' from assembly 'Newtonsoft.Json`..., this is what's wrong.)
+The main runtime code is included in the `ink-engine.dll`.
 
 We recommend that you create a wrapper MonoBehaviour component for the **ink** `Story`. Here, we'll call the component "Script" - in the "film script" sense, rather than the "Unity script" sense!
 
@@ -107,7 +105,59 @@ This approach can be taken even further to text that flexibly indicates non-cont
     
 The above approach is used in our current game for the writer to declare the props that they expect to be in the scene. These might be picked up in the game editor in order to automatically fill a scene with placeholder objects, or just to validate that the level designer has populated the scene correctly.
 
-Of course, you can also use *External Functions* - see below, but the above approach is flexible and won't cause the game to crash if everything isn't set up perfectly yet.
+To mark up content more explicitly, you may want to use *tags* or *external functions* - see below. At inkle, we find that we use a mixture, but we actually find the above approach useful for a very large portion of our interaction with the game - it's very flexible.
+
+
+## Marking up your ink content with tags
+
+Tags can be used to add metadata to your game content that isn't intended to appear to the player. Within ink, add a `#` character followed by any string content you want to pass over to the game. There are three main places where you can add these hash tags:
+
+### Line by line tags
+
+One use case is for a graphic adventure that has different art for characters depending on their facial expression. So, you could do:
+
+    Passepartout: Really, Monsieur. # surly
+    
+On the game side, every time you get content with `_inkStory.Continue()`, you can get a list of tags with `_inkStory.currentTags`, which will return a `List<string>`, in the above case with just one element: `"surly"`.
+
+To add more than one tag, simply delimit them with more `#` characters:
+    
+    Passepartout: Really, Monsieur. # surly # really_monsieur.ogg
+    
+The above demonstrate another possible use case: providing full voice-over for your game, by marking up your ink with the audio filenames. 
+
+Tags for a line can be written above it, or on the end of the line:
+
+    # the first tag
+    # the second tag
+    This is the line of content. # the third tag
+
+All of the above tags will be included in the `currentTags` list.
+
+### Knot tags
+
+Any tags that you include at the very top of a knot:
+
+    === Munich ==
+    # location: Germany
+    # overview: munich.ogg
+    # require: Train ticket
+    First line of content in the knot.
+    
+...are accessible by calling `_inkStory.TagsForContentAtPath("your_knot")`, which is useful for getting metadata from a knot before you actually want the game to go there.
+
+Note that these tags will also appear in the `currentTags` list for the first line of content in the knot.
+
+### Global tags
+
+Any tags provided at the very top of the main ink file are accessible via the `Story`'s `globalTags` property, which also returns a `List<string>`. Any top level story metadata can be included there.
+
+We suggest the following by convention, if you wish to share your ink stories publicly:
+
+    # author: Joseph Humfrey
+    # title: My Wonderful Ink Story
+    
+Note that [Inky](https://github.com/inkle/inky) will use the title tag in this format as the `<h1>` tag in a story exported for web.
 
 ## Jumping to a particular "scene"
 
@@ -172,15 +222,25 @@ You can define game-side functions in C# that can be called directly from **ink*
 
 The types you can use as parameters and return values are int, float, bool (automatically converted from **ink**’s internal ints) and string.
 
-    
+### Fallbacks for external functions
+
+When testing your story, either in [Inky](https://github.com/inkle/inky) or in the [ink-unity integration](https://github.com/inkle/ink-unity-integration/) player window, you don't get an opportunity to bind a game function before running the story. To get around this, you can define a *fallback function* within ink, which is run if the `EXTERNAL` function can't be found. To do so, simply create an ink function with the same name and parameters. For example, for the above `multiply` example, create the ink function:
+
+```
+=== function multiply(x,y) ===
+// Usually external functions can only return placeholder
+// results, otherwise they'd be defined in ink!
+~ return 1 
+```
+
 ## Debugging ink engine issues
 
 The **ink** engine is still in a nascent stage (alpha!), and you may well encounter bugs, or unhelpful error messages and exceptions.
 
 We recommend we debug the compiler so that you get a breakpoint in its code when compiling and/or playing your ink file. To do so, open **ink.sln** in Xamarin or Visual Studio, and run the compiler code in the Test configuration. You should supply command line parameters in the project settings. (In Xamarin, right-click on *inklecate*, click *Options*, and in *Run > General* and modify the parameters field.) You could use something like:
 
-    -p -d <path to your game's ink files directory> yourMainFile.ink
+    -p path/to/yourMainFile.ink
     
-The `-d` switch allows you to specify the root directory for your ink files, which may be necessary depending on where your game files are compared to the ink repo, and whether you have ink `INCLUDE` statements. The `-p` switch puts the compiler in Play mode, so that it will execute your story immediately.
+The `-p` switch puts the compiler in Play mode, so that it will execute your story immediately.
 
 When your story hits an assertion, you may be able to glean a little more information from the state of the ink engine. See the [Architecture and Development](https://github.com/inkle/ink/blob/master/Documentation/ArchitectureAndDevOverview.md) document for help understanding and debugging the engine code.

@@ -73,9 +73,7 @@ namespace Ink
                 List<ParseRule> breakingRules = new List<ParseRule> ();
 
                 // Diverts can go anywhere
-                // (Check before KnotDefinition since possible "==>" has to be found before "== name ==")
-                rulesAtLevel.Add(Line(MultiStepTunnelDivert));
-                rulesAtLevel.Add (Line (StartThread));
+                rulesAtLevel.Add(Line(MultiDivert));
 
                 if (level >= StatementLevel.Top) {
 
@@ -100,6 +98,7 @@ namespace Ink
                 }
 
                 // Global variable declarations can go anywhere
+                rulesAtLevel.Add(Line(ListDeclaration));
                 rulesAtLevel.Add(Line(VariableDeclaration));
                 rulesAtLevel.Add(Line(ConstDeclaration));
 
@@ -147,10 +146,10 @@ namespace Ink
 		protected ParseRule Line(ParseRule inlineRule)
 		{
 			return () => {
-				var result = ParseObject(inlineRule);
-				if( result == null ) {
-					return null;
-				}
+				object result = ParseObject(inlineRule);
+                if (result == null) {
+                    return null;
+                }
 
 				Expect(EndOfLine, "end of line", recoveryRule: SkipToNextLine);
 

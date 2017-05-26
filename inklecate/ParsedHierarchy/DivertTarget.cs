@@ -47,7 +47,7 @@ namespace Ink.Parsed
                         if (!(binaryExprParent.leftExpression is DivertTarget || binaryExprParent.leftExpression is VariableReference)) {
                             badUsage = true;
                         }
-                        if (!(binaryExprParent.leftExpression is DivertTarget || binaryExprParent.leftExpression is VariableReference)) {
+                        if (!(binaryExprParent.rightExpression is DivertTarget || binaryExprParent.rightExpression is VariableReference)) {
                             badUsage = true;
                         }
                     }
@@ -85,7 +85,36 @@ namespace Ink.Parsed
                 usageContext = usageParent;
             }
 
+            // Example ink for this class:
+            //
+            //     VAR x = -> blah
+            //
+            // ...which means that "blah" is expected to be a literal stitch  target rather
+            // than a variable name. We can't really intelligently recover from this (e.g. if blah happens to
+            // contain a divert target itself) since really we should be generating a variable reference
+            // rather than a concrete DivertTarget, so we list it as an error.
+            if (_runtimeDivert.hasVariableTarget)
+                Error ("Since '"+divert.target.dotSeparatedComponents+"' is a variable, it shouldn't be preceded by '->' here.");
+
             _runtimeDivertTargetValue.targetPath = _runtimeDivert.targetPath;
+        }
+
+        // Equals override necessary in order to check for CONST multiple definition equality
+        public override bool Equals (object obj)
+        {
+            var otherDivTarget = obj as DivertTarget;
+            if (otherDivTarget == null) return false;
+
+            var targetStr = this.divert.target.dotSeparatedComponents;
+            var otherTargetStr = otherDivTarget.divert.target.dotSeparatedComponents;
+
+            return targetStr.Equals (otherTargetStr);
+        }
+
+        public override int GetHashCode ()
+        {
+            var targetStr = this.divert.target.dotSeparatedComponents;
+            return targetStr.GetHashCode ();
         }
             
         Runtime.DivertTargetValue _runtimeDivertTargetValue;

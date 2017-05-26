@@ -3,8 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.IO;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace Ink.Runtime
 {
@@ -17,7 +15,7 @@ namespace Ink.Runtime
         /// <summary>
         /// The current version of the ink story file format.
         /// </summary>
-        public const int inkVersionCurrent = 12;
+        public const int inkVersionCurrent = 16;
 
         // Version numbers are for engine itself and story file, rather
         // than the story state save format (which is um, currently nonexistant)
@@ -34,13 +32,13 @@ namespace Ink.Runtime
         /// <summary>
         /// The minimum legacy version of ink that can be loaded by the current version of the code.
         /// </summary>
-        const int inkVersionMinimumCompatible = 12;
+        const int inkVersionMinimumCompatible = 16;
 
         /// <summary>
         /// The list of Choice objects available at the current point in
         /// the Story. This list will be populated as the Story is stepped
         /// through with the Continue() method. Once canContinue becomes
-        /// false, this list will be fully populated, and is usually
+        /// false, this list will be populated, and is usually
         /// (but not always) on the final Continue() step.
         /// </summary>
         public List<Choice> currentChoices
@@ -65,6 +63,12 @@ namespace Ink.Runtime
 		public string currentText { get  { return state.currentText; } }
 
         /// <summary>
+        /// Gets a list of tags as defined with '#' in source that were seen
+        /// during the latest Continue() call.
+        /// </summary>
+        public List<string> currentTags { get { return state.currentTags; } }
+
+        /// <summary>
         /// Any errors generated during evaluation of the Story.
         /// </summary>
         public List<string> currentErrors { get { return state.currentErrors; } }
@@ -81,6 +85,12 @@ namespace Ink.Runtime
         /// </summary>
         public VariablesState variablesState{ get { return state.variablesState; } }
 
+        internal ListDefinitionsOrigin listDefinitions {
+            get {
+                return _listDefinitions;
+            }
+        }
+
         /// <summary>
         /// The entire current state of the story including (but not limited to):
         /// 
@@ -96,9 +106,13 @@ namespace Ink.Runtime
         // Warning: When creating a Story using this constructor, you need to
         // call ResetState on it before use. Intended for compiler use only.
         // For normal use, use the constructor that takes a json string.
-        internal Story (Container contentContainer)
+        internal Story (Container contentContainer, List<Runtime.ListDefinition> lists = null)
 		{
 			_mainContentContainer = contentContainer;
+
+            if (lists != null)
+                _listDefinitions = new ListDefinitionsOrigin (lists);
+
             _externals = new Dictionary<string, ExternalFunction> ();
 		}
 
@@ -107,25 +121,29 @@ namespace Ink.Runtime
         /// </summary>
         public Story(string jsonString) : this((Container)null)
         {
-            JObject rootObject = JObject.Parse (jsonString);
+            Dictionary<string, object> rootObject = SimpleJson.TextToDictionary (jsonString);
 
-            var versionObj = rootObject ["inkVersion"];
+            object versionObj = rootObject ["inkVersion"];
             if (versionObj == null)
                 throw new System.Exception ("ink version number not found. Are you sure it's a valid .ink.json file?");
 
-            int formatFromFile = versionObj.ToObject<int> ();
+            int formatFromFile = (int)versionObj;
             if (formatFromFile > inkVersionCurrent) {
                 throw new System.Exception ("Version of ink used to build story was newer than the current verison of the engine");
             } else if (formatFromFile < inkVersionMinimumCompatible) {
                 throw new System.Exception ("Version of ink used to build story is too old to be loaded by this verison of the engine");
             } else if (formatFromFile != inkVersionCurrent) {
-                Console.WriteLine ("WARNING: Version of ink used to build story doesn't match current version of engine. Non-critical, but recommend synchronising.");
+                System.Diagnostics.Debug.WriteLine ("WARNING: Version of ink used to build story doesn't match current version of engine. Non-critical, but recommend synchronising.");
             }
                 
             var rootToken = rootObject ["root"];
             if (rootToken == null)
                 throw new System.Exception ("Root node for ink not found. Are you sure it's a valid .ink.json file?");
-            
+
+            object listDefsObj;
+            if (rootObject.TryGetValue ("listDefs", out listDefsObj)) {
+                _listDefinitions = Json.JTokenToListDefinitions (listDefsObj);
+            }
 
             _mainContentContainer = Json.JTokenToRuntimeObject (rootToken) as Container;
 
@@ -135,18 +153,18 @@ namespace Ink.Runtime
         /// <summary>
         /// The Story itself in JSON representation.
         /// </summary>
-        /// <param name="indented">
-        /// Whether to indent or 'pretty print' the JSON. Not avisable, except
-        /// for debugging purposes of small stories.</param>
-        public string ToJsonString(bool indented = false)
+        public string ToJsonString()
         {
-            var rootContainerToken = Json.RuntimeObjectToJToken (_mainContentContainer);
+            var rootContainerJsonList = (List<object>) Json.RuntimeObjectToJToken (_mainContentContainer);
 
-            var rootObject = new JObject ();
-            rootObject ["inkVersion"] = new JValue (inkVersionCurrent);
-            rootObject ["root"] = rootContainerToken;
+            var rootObject = new Dictionary<string, object> ();
+            rootObject ["inkVersion"] = inkVersionCurrent;
+            rootObject ["root"] = rootContainerJsonList;
 
-            return rootObject.ToString (indented ? Formatting.Indented : Formatting.None);
+            if (_listDefinitions != null)
+                rootObject ["listDefs"] = Json.ListDefinitionsToJToken (_listDefinitions);
+
+            return SimpleJson.DictionaryToText (rootObject);
         }
             
         /// <summary>
@@ -179,7 +197,7 @@ namespace Ink.Runtime
         /// </summary>
         public void ResetCallstack()
         {
-            _state.ForceEndFlow ();
+            _state.ForceEnd ();
         }
 
         void ResetGlobals()
@@ -268,8 +286,14 @@ namespace Ink.Runtime
                             string currText = currentText;
                             int prevTextLength = stateAtLastNewline.currentText.Length;
 
+                            // Take tags into account too, so that a tag following a content line:
+                            //   Content
+                            //   # tag
+                            // ... doesn't cause the tag to be wrongly associated with the content above.
+                            int prevTagCount = stateAtLastNewline.currentTags.Count;
+
                             // Output has been extended?
-                            if( !currText.Equals(stateAtLastNewline.currentText) ) {
+                            if( !currText.Equals(stateAtLastNewline.currentText) || prevTagCount != currentTags.Count ) {
 
                                 // Original newline still exists?
                                 if( currText.Length >= prevTextLength && currText[prevTextLength-1] == '\n' ) {
@@ -295,7 +319,13 @@ namespace Ink.Runtime
                             // We're going to continue stepping in case we see glue or some
                             // non-text content such as choices.
                             if( canContinue ) {
-                                stateAtLastNewline = StateSnapshot();
+
+								// Don't bother to record the state beyond the current newline.
+								// e.g.:
+								// Hello world\n			// record state at the end of here
+								// ~ complexCalculation()   // don't actually need this unless it generates text
+								if( stateAtLastNewline == null )
+                                	stateAtLastNewline = StateSnapshot();
                             } 
 
                             // Can't continue, so we're about to exit - make sure we
@@ -322,7 +352,7 @@ namespace Ink.Runtime
                         Error("Thread available to pop, threads should always be flat by the end of evaluation?");
                     }
 
-                    if( currentChoices.Count == 0 && !state.didSafeExit ) {
+					if( state.generatedChoices.Count == 0 && !state.didSafeExit && _temporaryEvaluationContainer == null ) {
                         if( state.callStack.CanPop(PushPopType.Tunnel) ) {
                             Error("unexpectedly reached end of content. Do you need a '->->' to return from a tunnel?");
                         } else if( state.callStack.CanPop(PushPopType.Function) ) {
@@ -357,7 +387,7 @@ namespace Ink.Runtime
         public bool canContinue
         {
             get {
-                return state.currentContentObject != null && !state.hasError;
+				return state.canContinue;
             }
         }
 
@@ -443,7 +473,7 @@ namespace Ink.Runtime
             if (choicePoint) {
                 var choice = ProcessChoice (choicePoint);
                 if (choice) {
-                    state.currentChoices.Add (choice);
+                    state.generatedChoices.Add (choice);
                 }
 
                 currentContentObj = null;
@@ -503,6 +533,7 @@ namespace Ink.Runtime
             }
         }
 
+		HashSet<Container> _prevContainerSet;
         void VisitChangedContainersDueToDivert()
         {
             var previousContentObject = state.previousContentObject;
@@ -512,11 +543,12 @@ namespace Ink.Runtime
                 return;
             
             // First, find the previously open set of containers
-            var prevContainerSet = new HashSet<Container> ();
+			if( _prevContainerSet == null ) _prevContainerSet = new HashSet<Container> ();
+			_prevContainerSet.Clear();
             if (previousContentObject) {
                 Container prevAncestor = previousContentObject as Container ?? previousContentObject.parent as Container;
                 while (prevAncestor) {
-                    prevContainerSet.Add (prevAncestor);
+					_prevContainerSet.Add (prevAncestor);
                     prevAncestor = prevAncestor.parent as Container;
                 }
             }
@@ -525,7 +557,7 @@ namespace Ink.Runtime
             // content step. However, we need to walk up the new ancestry to see if there are more new containers
             Runtime.Object currentChildOfContainer = newContentObject;
             Container currentContainerAncestor = currentChildOfContainer.parent as Container;
-            while (currentContainerAncestor && !prevContainerSet.Contains(currentContainerAncestor)) {
+			while (currentContainerAncestor && !_prevContainerSet.Contains(currentContainerAncestor)) {
 
                 // Check whether this ancestor container is being entered at the start,
                 // by checking whether the child object is the first.
@@ -731,8 +763,22 @@ namespace Ink.Runtime
 
                     var popType = evalCommand.commandType == ControlCommand.CommandType.PopFunction ?
                         PushPopType.Function : PushPopType.Tunnel;
-                    
-                    if (state.callStack.currentElement.type != popType || !state.callStack.canPop) {
+
+                    // Tunnel onwards is allowed to specify an optional override
+                    // divert to go to immediately after returning: ->-> target
+                    DivertTargetValue overrideTunnelReturnTarget = null;
+                    if (popType == PushPopType.Tunnel) {
+                        var popped = state.PopEvaluationStack ();
+                        overrideTunnelReturnTarget = popped as DivertTargetValue;
+                        if (overrideTunnelReturnTarget == null) {
+                            Assert (popped is Void, "Expected void if ->-> doesn't override target");
+                        }
+                    }
+
+                    if (state.TryExitExternalFunctionEvaluation ()) {
+                        break;
+                    }
+                    else if (state.callStack.currentElement.type != popType || !state.callStack.canPop) {
 
                         var names = new Dictionary<PushPopType, string> ();
                         names [PushPopType.Function] = "function return statement (~ return)";
@@ -750,7 +796,12 @@ namespace Ink.Runtime
 
                     else {
                         state.callStack.Pop ();
+
+                        // Does tunnel onwards override by diverting to a new ->-> target?
+                        if( overrideTunnelReturnTarget )
+                            state.divertedTargetObject = ContentAtPath (overrideTunnelReturnTarget.targetPath);
                     }
+
                     break;
 
                 case ControlCommand.CommandType.BeginString:
@@ -797,7 +848,7 @@ namespace Ink.Runtime
                     break;
 
                 case ControlCommand.CommandType.ChoiceCount:
-                    var choiceCount = currentChoices.Count;
+					var choiceCount = state.generatedChoices.Count;
                     state.PushEvaluationStack (new Runtime.IntValue (choiceCount));
                     break;
 
@@ -815,6 +866,45 @@ namespace Ink.Runtime
                     var container = ContentAtPath (divertTarget.targetPath) as Container;
                     int turnCount = TurnsSinceForContainer (container);
                     state.PushEvaluationStack (new IntValue (turnCount));
+                    break;
+
+                case ControlCommand.CommandType.Random:
+                    var maxInt = state.PopEvaluationStack () as IntValue;
+                    var minInt = state.PopEvaluationStack () as IntValue;
+
+                    if (minInt == null)
+                        Error ("Invalid value for minimum parameter of RANDOM(min, max)");
+
+                    if (maxInt == null)
+                        Error ("Invalid value for maximum parameter of RANDOM(min, max)");
+
+                    // +1 because it's inclusive of min and max, for e.g. RANDOM(1,6) for a dice roll.
+                    var randomRange = maxInt.value - minInt.value + 1;
+                    if (randomRange <= 0)
+                        Error ("RANDOM was called with minimum as " + minInt.value + " and maximum as " + maxInt.value + ". The maximum must be larger");
+
+                    var resultSeed = state.storySeed + state.previousRandom;
+                    var random = new Random(resultSeed);
+
+                    var nextRandom = random.Next ();
+                    var chosenValue = (nextRandom % randomRange) + minInt.value;
+                    state.PushEvaluationStack (new IntValue (chosenValue));
+
+                    // Next random number (rather than keeping the Random object around)
+                    state.previousRandom = nextRandom;
+                    break;
+
+                case ControlCommand.CommandType.SeedRandom:
+                    var seed = state.PopEvaluationStack () as IntValue;
+                    if (seed == null)
+                        Error ("Invalid value passed to SEED_RANDOM");
+
+                    // Story seed affects both RANDOM and shuffle behaviour
+                    state.storySeed = seed.value;
+                    state.previousRandom = 0;
+
+                    // SEED_RANDOM returns nothing.
+                    state.PushEvaluationStack (new Runtime.Void ());
                     break;
 
                 case ControlCommand.CommandType.VisitIndex:
@@ -843,14 +933,89 @@ namespace Ink.Runtime
                     // In normal flow - allow safe exit without warning
                     else {
                         state.didSafeExit = true;
+
+                        // Stop flow in current thread
+                        state.currentContentObject = null;
                     }
 
                     break;
                 
                 // Force flow to end completely
                 case ControlCommand.CommandType.End:
-                    state.ForceEndFlow ();
+                    state.ForceEnd ();
                     break;
+
+                case ControlCommand.CommandType.ListFromInt:
+                    var intVal = state.PopEvaluationStack () as IntValue;
+                    var listNameVal = state.PopEvaluationStack () as StringValue;
+
+                    ListValue generatedListValue = null;
+
+                    ListDefinition foundListDef;
+                    if (listDefinitions.TryGetDefinition (listNameVal.value, out foundListDef)) {
+                        InkListItem foundItem;
+                        if (foundListDef.TryGetItemWithValue (intVal.value, out foundItem)) {
+                            generatedListValue = new ListValue (foundItem, intVal.value);
+                        }
+                    } else {
+                        throw new StoryException ("Failed to find LIST called " + listNameVal.value);
+                    }
+
+                    if (generatedListValue == null)
+                        generatedListValue = new ListValue ();
+
+                    state.PushEvaluationStack (generatedListValue);
+                    break;
+
+                case ControlCommand.CommandType.ListRange: {
+                        var max = state.PopEvaluationStack ();
+                        var min = state.PopEvaluationStack ();
+
+                        var targetList = state.PopEvaluationStack () as ListValue;
+
+                        if (targetList == null || min == null || max == null)
+                            throw new StoryException ("Expected list, minimum and maximum for LIST_RANGE");
+
+                        // Allow either int or a particular list item to be passed for the bounds,
+                        // so wrap up a function to handle this casting for us.
+                        Func<Runtime.Object, int> IntBound = (obj) => {
+                            var listValue = obj as ListValue;
+                            if (listValue) {
+                                return (int)listValue.value.maxItem.Value;
+                            }
+
+                            var intValue = obj as IntValue;
+                            if (intValue) {
+                                return intValue.value;
+                            }
+
+                            return -1;
+                        };
+
+                        int minVal = IntBound (min);
+                        int maxVal = IntBound (max);
+                        if (minVal == -1)
+                            throw new StoryException ("Invalid min range bound passed to LIST_VALUE(): " + min);
+
+                        if (maxVal == -1)
+                            throw new StoryException ("Invalid max range bound passed to LIST_VALUE(): " + max);
+
+                        // Extract the range of items from the origin list
+                        ListValue result = new ListValue ();
+                        var origins = targetList.value.origins;
+
+                        if (origins != null) {
+                            foreach(var origin in origins) {
+                                var rangeFromOrigin = origin.ListRange (minVal, maxVal);
+                                foreach (var kv in rangeFromOrigin.value) {
+                                    result.value [kv.Key] = kv.Value;
+                                }
+                            }
+                        }
+                            
+                        state.PushEvaluationStack (result);
+                        break;
+                    }
 
                 default:
                     Error ("unhandled ControlCommand: " + evalCommand);
@@ -899,19 +1064,19 @@ namespace Ink.Runtime
                     }
                 }
 
-                state.evaluationStack.Add( foundValue );
+                state.PushEvaluationStack (foundValue);
 
                 return true;
             }
 
             // Native function call
-            else if( contentObj is NativeFunctionCall ) {
-                var func = (NativeFunctionCall) contentObj;
-                var funcParams = state.PopEvaluationStack(func.numberOfParameters);
-                var result = func.Call(funcParams);
-                state.evaluationStack.Add(result);
+            else if (contentObj is NativeFunctionCall) {
+                var func = (NativeFunctionCall)contentObj;
+                var funcParams = state.PopEvaluationStack (func.numberOfParameters);
+                var result = func.Call (funcParams);
+                state.PushEvaluationStack (result);
                 return true;
-            }
+            } 
 
             // No control content, must be ordinary content
             return false;
@@ -934,14 +1099,17 @@ namespace Ink.Runtime
         /// 
         /// </summary>
         /// <param name="path">A dot-separted path string, as specified above.</param>
-        public void ChoosePathString(string path)
+        /// <param name="arguments">Optional set of arguments to pass, if path is to a knot that takes them.</param>
+        public void ChoosePathString (string path, params object [] arguments)
         {
-            ChoosePath (new Path(path));
+            state.PassArgumentsToEvaluationStack (arguments);
+            ChoosePath (new Path (path));
         }
+
             
-        internal void ChoosePath(Path path)
+        internal void ChoosePath(Path p)
         {
-            state.SetChosenPath (path);
+            state.SetChosenPath (p);
 
             // Take a note of newly visited containers for read counts etc
             VisitChangedContainersDueToDivert ();
@@ -966,6 +1134,74 @@ namespace Ink.Runtime
             state.callStack.currentThread = choiceToChoose.threadAtGeneration;
 
             ChoosePath (choiceToChoose.choicePoint.choiceTarget.path);
+        }
+
+        /// <summary>
+        /// Checks if a function exists.
+        /// </summary>
+        /// <returns>True if the function exists, else false.</returns>
+        /// <param name="functionName">The name of the function as declared in ink.</param>
+        public bool HasFunction (string functionName)
+        {
+            try {
+                return ContentAtPath (new Path (functionName)) is Runtime.Container;
+            } catch {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Evaluates a function defined in ink.
+        /// </summary>
+        /// <returns>The return value as returned from the ink function with `~ return myValue`, or null if nothing is returned.</returns>
+        /// <param name="functionName">The name of the function as declared in ink.</param>
+        /// <param name="arguments">The arguments that the ink function takes, if any. Note that we don't (can't) do any validation on the number of arguments right now, so make sure you get it right!</param>
+        public object EvaluateFunction (string functionName, params object [] arguments)
+        {
+            string _;
+            return EvaluateFunction (functionName, out _, arguments);
+        }
+
+        /// <summary>
+        /// Evaluates a function defined in ink, and gathers the possibly multi-line text as generated by the function.
+        /// This text output is any text written as normal content within the function, as opposed to the return value, as returned with `~ return`.
+        /// </summary>
+        /// <returns>The return value as returned from the ink function with `~ return myValue`, or null if nothing is returned.</returns>
+        /// <param name="functionName">The name of the function as declared in ink.</param>
+        /// <param name="textOutput">The text content produced by the function via normal ink, if any.</param>
+        /// <param name="arguments">The arguments that the ink function takes, if any. Note that we don't (can't) do any validation on the number of arguments right now, so make sure you get it right!</param>
+        public object EvaluateFunction (string functionName, out string textOutput, params object [] arguments)
+        {
+			if(functionName == null) {
+				throw new System.Exception ("Function is null");
+			} else if(functionName == string.Empty || functionName.Trim() == string.Empty) {
+				throw new System.Exception ("Function is empty or white space.");
+			}
+
+            // Get the content that we need to run
+            Runtime.Container funcContainer = null;
+            try {
+                funcContainer = ContentAtPath (new Path (functionName)) as Runtime.Container;
+            } catch (StoryException e) {
+                if (e.Message.Contains ("not found"))
+                    throw new System.Exception ("Function doesn't exist: '" + functionName + "'");
+                else
+                    throw e;
+            }
+
+            // State will temporarily replace the callstack in order to evaluate
+            state.StartExternalFunctionEvaluation (funcContainer, arguments);
+
+            // Evaluate the function, and collect the string output
+            var stringOutput = new StringBuilder ();
+            while (canContinue) {
+                stringOutput.Append (Continue ());
+            }
+            textOutput = stringOutput.ToString ();
+
+            // Finish evaluation, and see whether anything was produced
+            var result = state.CompleteExternalFunctionEvaluation ();
+            return result;
         }
 
         // Evaluate a "hot compiled" piece of ink content, as used by the REPL-like
@@ -1085,7 +1321,7 @@ namespace Ink.Runtime
             if (value == null)
                 return null;
 
-            if (value.GetType () == typeof(T))
+            if (value is T)
                 return (T) value;
 
             if (value is float && typeof(T) == typeof(int)) {
@@ -1269,25 +1505,45 @@ namespace Ink.Runtime
         /// </summary>
         public void ValidateExternalBindings()
         {
-            ValidateExternalBindings (_mainContentContainer);
+			var missingExternals = new HashSet<string>();
+
+			ValidateExternalBindings (_mainContentContainer, missingExternals);
             _hasValidatedExternals = true;
+
+			// No problem! Validation complete
+			if( missingExternals.Count == 0 ) {
+				_hasValidatedExternals = true;
+			} 
+
+			// Error for all missing externals
+			else {
+				var message = string.Format("ERROR: Missing function binding for external{0}: '{1}' {2}",
+					missingExternals.Count > 1 ? "s" : string.Empty,
+					string.Join("', '", missingExternals.ToArray()),
+					allowExternalFunctionFallbacks ? ", and no fallback ink function found." : " (ink fallbacks disabled)"
+				);
+					
+				Error(message);
+			}
         }
 
-        void ValidateExternalBindings(Container c)
+		void ValidateExternalBindings(Container c, HashSet<string> missingExternals)
         {
             foreach (var innerContent in c.content) {
-                ValidateExternalBindings (innerContent);
+				var container = innerContent as Container;
+				if( container == null || !container.hasValidName )
+					ValidateExternalBindings (innerContent, missingExternals);
             }
             foreach (var innerKeyValue in c.namedContent) {
-                ValidateExternalBindings (innerKeyValue.Value as Runtime.Object);
+				ValidateExternalBindings (innerKeyValue.Value as Runtime.Object, missingExternals);
             }
         }
 
-        void ValidateExternalBindings(Runtime.Object o)
+		void ValidateExternalBindings(Runtime.Object o, HashSet<string> missingExternals)
         {
             var container = o as Container;
             if (container) {
-                ValidateExternalBindings (container);
+                ValidateExternalBindings (container, missingExternals);
                 return;
             }
 
@@ -1296,15 +1552,14 @@ namespace Ink.Runtime
                 var name = divert.targetPathString;
 
                 if (!_externals.ContainsKey (name)) {
-
-                    INamedContent fallbackFunction = null;
-                    bool fallbackFound = mainContentContainer.namedContent.TryGetValue (name, out fallbackFunction);
-
-                    if (!allowExternalFunctionFallbacks)
-                        Error ("Missing function binding for external '" + name + "' (ink fallbacks disabled)");
-                    else if( !fallbackFound ) {
-                        Error ("Missing function binding for external '" + name + "', and no fallback ink function found.");
-                    }
+					if( allowExternalFunctionFallbacks ) {
+						bool fallbackFound = mainContentContainer.namedContent.ContainsKey(name);
+						if( !fallbackFound ) {
+							missingExternals.Add(name);
+						}
+					} else {
+						missingExternals.Add(name);
+					}
                 }
             }
         }
@@ -1399,6 +1654,53 @@ namespace Ink.Runtime
         }
 
         /// <summary>
+        /// Get any global tags associated with the story. These are defined as
+        /// hash tags defined at the very top of the story.
+        /// </summary>
+        public List<string> globalTags {
+            get {
+                return TagsAtStartOfFlowContainerWithPathString ("");
+            }
+        }
+
+        /// <summary>
+        /// Gets any tags associated with a particular knot or knot.stitch.
+        /// These are defined as hash tags defined at the very top of a 
+        /// knot or stitch.
+        /// </summary>
+        /// <param name="path">The path of the knot or stitch, in the form "knot" or "knot.stitch".</param>
+        public List<string> TagsForContentAtPath (string path)
+        {
+            return TagsAtStartOfFlowContainerWithPathString (path);
+        }
+
+        List<string> TagsAtStartOfFlowContainerWithPathString (string pathString)
+        {
+            var path = new Runtime.Path (pathString);
+
+            // Expected to be global story, knot or stitch
+            var flowContainer = ContentAtPath (path) as Container;
+            while(true) {
+                var firstContent = flowContainer.content [0];
+                if (firstContent is Container)
+                    flowContainer = (Container)firstContent;
+                else break;
+            }
+
+            // Any initial tag objects count as the "main tags" associated with that story/knot/stitch
+            List<string> tags = null;
+            foreach (var c in flowContainer.content) {
+                var tag = c as Runtime.Tag;
+                if (tag) {
+                    if (tags == null) tags = new List<string> ();
+                    tags.Add (tag.text);
+                } else break;
+            }
+
+            return tags;
+        }
+
+        /// <summary>
         /// Useful when debugging a (very short) story, to visualise the state of the
         /// story. Add this call as a watch and open the extended text. A left-arrow mark
         /// will denote the current point of the story.
@@ -1459,12 +1761,12 @@ namespace Ink.Runtime
                     }
 
                     didPop = true;
-                } 
-
-                else if (state.callStack.canPopThread) {
+                } else if (state.callStack.canPopThread) {
                     state.callStack.PopThread ();
 
                     didPop = true;
+                } else {
+                    state.TryExitExternalFunctionEvaluation ();
                 }
 
                 // Step past the point where we last called out
@@ -1642,7 +1944,7 @@ namespace Ink.Runtime
             state.AddError (message);
 
             // In a broken state don't need to know about any other errors.
-            state.ForceEndFlow ();
+            state.ForceEnd ();
         }
 
         void Assert(bool condition, string message = null, params object[] formatParams)
@@ -1717,8 +2019,8 @@ namespace Ink.Runtime
             }
         }
 
-        [JsonProperty]
-        private Container _mainContentContainer;
+        Container _mainContentContainer;
+        ListDefinitionsOrigin _listDefinitions;
 
         Dictionary<string, ExternalFunction> _externals;
         Dictionary<string, VariableObserver> _variableObservers;

@@ -148,6 +148,20 @@ namespace Ink.Parsed
 
             variableDeclarations [varDecl.variableName] = varDecl;
         }
+
+        public void ResolveWeavePointNaming ()
+        {
+            // Find all weave points and organise them by name ready for
+            // diverting. Also detect naming collisions.
+            if( _rootWeave )
+                _rootWeave.ResolveWeavePointNaming ();
+
+            if (_subFlowsByName != null) {
+                foreach (var namedSubFlow in _subFlowsByName) {
+                    namedSubFlow.Value.ResolveWeavePointNaming ();
+                }
+            }
+        }
             
         public override Runtime.Object GenerateRuntimeObject ()
         {
@@ -190,8 +204,10 @@ namespace Ink.Parsed
 
                     var childFlowRuntime = childFlow.runtimeObject;
 
-                    // First inner knot/stitch - automatically step into it
-                    if (contentIdx == 0 && !childFlow.hasParameters) {
+                    // First inner stitch - automatically step into it
+                    // 20/09/2016 - let's not auto step into knots
+                    if (contentIdx == 0 && !childFlow.hasParameters 
+                        && this.flowLevel == FlowLevel.Knot) {
                         _startingSubFlowDivert = new Runtime.Divert ();
                         container.AddContent(_startingSubFlowDivert);
                         _startingSubFlowRuntime = childFlowRuntime;
